@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ko" data-bs-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>내 포트폴리오</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" rel="stylesheet">
+<style>
+:root{--up:#d6342c;--down:#1f5fd1;--accent:#0f6b63}
+body{font-family:Pretendard,system-ui,sans-serif;background:var(--bs-tertiary-bg)}
+.kpi{border-left:4px solid var(--accent)}
+.kpi .v{font-size:1.45rem;font-weight:700;font-variant-numeric:tabular-nums}
+.kpi .l{font-size:.8rem;color:var(--bs-secondary-color)}
+.up{color:var(--up)}.down{color:var(--down)}
+.grid{height:320px}
+@media(max-width:576px){.kpi .v{font-size:1.15rem}}
+</style>
+</head>
+<body>
+<nav class="navbar bg-body border-bottom mb-3"><div class="container-fluid gap-2">
+  <span class="navbar-brand fw-bold">내 포트폴리오</span>
+  <div class="d-flex flex-wrap gap-2 align-items-center">
+    <div class="input-group input-group-sm" style="width:150px"><span class="input-group-text">USD</span><input id="fx" type="number" class="form-control" title="환율(원)"></div>
+    <button class="btn btn-sm btn-outline-secondary" id="theme">다크 모드</button>
+    <button class="btn btn-sm btn-outline-secondary" id="exp">백업</button>
+    <label class="btn btn-sm btn-outline-secondary mb-0">복원<input id="imp" type="file" accept=".json" hidden></label>
+    <button class="btn btn-sm btn-dark" id="login">Google 로그인</button>
+  </div>
+</div></nav>
+
+<main class="container-fluid pb-5">
+  <div class="row g-2 mb-3" id="kpis"></div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-lg-8"><div class="card"><div class="card-header">보유 종목 <small class="text-secondary">현재가 칸을 눌러 수정</small></div><div id="gH" class="grid ag-theme-quartz"></div></div></div>
+    <div class="col-lg-4"><div class="card h-100"><div class="card-header">자산 배분</div><div class="card-body"><canvas id="cA"></canvas></div></div></div>
+  </div>
+
+  <div class="card mb-3"><div class="card-header">거래 입력</div><div class="card-body">
+    <form id="f" class="row g-2">
+      <div class="col-6 col-md-2"><input type="date" id="d" class="form-control" required></div>
+      <div class="col-6 col-md-1"><select id="m" class="form-select"><option>KR</option><option>US</option></select></div>
+      <div class="col-6 col-md-2"><input id="s" class="form-control" placeholder="종목(코드/티커)" required></div>
+      <div class="col-6 col-md-1"><select id="t" class="form-select"><option value="buy">매수</option><option value="sell">매도</option><option value="div">배당</option></select></div>
+      <div class="col-4 col-md-2"><input id="q" type="number" step="any" class="form-control" placeholder="수량" required></div>
+      <div class="col-4 col-md-2"><input id="p" type="number" step="any" class="form-control" placeholder="단가(배당은 주당)" required></div>
+      <div class="col-4 col-md-1"><input id="fee" type="number" step="any" class="form-control" placeholder="수수료"></div>
+      <div class="col-12 col-md-1"><button class="btn btn-success w-100">추가</button></div>
+    </form>
+  </div></div>
+
+  <div class="card"><div class="card-header">거래내역</div><div id="gT" class="grid ag-theme-quartz"></div></div>
+  <div id="status" class="text-secondary small mt-2"></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/dist/ag-grid-community.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script>
+// ▼ Firebase 콘솔 > 프로젝트 설정의 웹 앱 구성값을 붙여넣으세요. 비워두면 로컬 저장만 사용합니다.
+const FIREBASE_CONFIG = { apiKey:"AIzaSyACAzJLYZ1utgwTm-zXB1J35bLDLtkaUk0", authDomain:"my-stock-portfolio-51c92.firebaseapp.com", projectId:"my-stock-portfolio-51c92", appId:"1:142566438345:web:a57d2d3993d50577402418" };
+
+const KEY='pf.v1';
+let S = JSON.parse(localStorage.getItem(KEY)||'null') || {tx:[],prices:{},fx:1380};
+const $=id=>document.getElementById(id);
+const won=n=>Math.round(n).toLocaleString('ko-KR')+'원';
+const pct=n=>(n>=0?'+':'')+n.toFixed(2)+'%';
+const cls=n=>n>=0?'up':'down';
+const rate=m=>m==='US'?S.fx:1;
+
+// ---------- 계산 (이동평균법) ----------
+function calc(){
+  const h={}; let realized=0, div=0;
+  [...S.tx].sort((a,b)=>a.date.localeCompare(b.date)).forEach(x=>{
+    const k=x.mkt+':'+x.sym, r=rate(x.mkt);
+    const o=h[k]||(h[k]={key:k,mkt:x.mkt,sym:x.sym,qty:0,cost:0});
+    if(x.type==='buy'){o.cost+=(x.qty*x.price+x.fee)*r;o.qty+=x.qty}
+    else if(x.type==='sell'){const avg=o.qty?o.cost/o.qty:0;realized+=((x.qty*x.price-x.fee)*r)-avg*x.qty;o.cost-=avg*x.qty;o.qty-=x.qty}
+    else div+=x.qty*x.price*r;
+  });
+  const rows=Object.values(h).filter(o=>o.qty>1e-9).map(o=>{
+    const cur=S.prices[o.key]??(o.cost/o.qty/rate(o.mkt));
+    const val=cur*rate(o.mkt)*o.qty, pl=val-o.cost;
+    return {...o,avg:o.cost/o.qty/rate(o.mkt),cur,val,pl,ret:o.cost?pl/o.cost*100:0};
+  });
+  return {rows,realized,div};
+}
+
+// ---------- 화면 ----------
+let gH,gT,chart;
+const nf=p=>({valueFormatter:x=>x.value==null?'':Math.round(x.value*100)/100});
+function render(){
+  const {rows,realized,div}=calc();
+  const inv=rows.reduce((a,r)=>a+r.cost,0), val=rows.reduce((a,r)=>a+r.val,0), pl=val-inv;
+  const k=[['총 자산',won(val)],['총 투자금',won(inv)],['현재 평가금액',won(val)],
+    ['평가손익',`<span class="${cls(pl)}">${won(pl)} (${pct(inv?pl/inv*100:0)})</span>`],
+    ['실현손익',`<span class="${cls(realized)}">${won(realized)}</span>`],['누적 배당',won(div)]];
+  $('kpis').innerHTML=k.map(([l,v])=>`<div class="col-6 col-md-4 col-xl-2"><div class="card kpi"><div class="card-body py-2"><div class="l">${l}</div><div class="v">${v}</div></div></div></div>`).join('');
+  gH.setGridOption('rowData',rows);
+  gT.setGridOption('rowData',[...S.tx].sort((a,b)=>b.date.localeCompare(a.date)));
+  chart.data.labels=rows.map(r=>r.sym);
+  chart.data.datasets[0].data=rows.map(r=>Math.round(r.val));
+  chart.update();
+  $('fx').value=S.fx;
+}
+
+function init(){
+  const cr=p=>p.value>=0?'up':'down';
+  gH=agGrid.createGrid($('gH'),{columnDefs:[
+    {field:'sym',headerName:'종목',pinned:'left',width:110},{field:'mkt',headerName:'시장',width:80},
+    {field:'qty',headerName:'수량',width:90},{field:'avg',headerName:'평균단가',...nf()},
+    {field:'cur',headerName:'현재가',editable:true,...nf(),cellStyle:{background:'rgba(15,107,99,.08)'}},
+    {field:'val',headerName:'평가금액(원)',valueFormatter:x=>Math.round(x.value).toLocaleString()},
+    {field:'pl',headerName:'손익(원)',cellClass:cr,valueFormatter:x=>Math.round(x.value).toLocaleString()},
+    {field:'ret',headerName:'수익률',cellClass:cr,valueFormatter:x=>pct(x.value)}],
+    defaultColDef:{flex:1,minWidth:90,sortable:true},
+    onCellValueChanged:e=>{S.prices[e.data.key]=+e.newValue;save()}});
+  gT=agGrid.createGrid($('gT'),{columnDefs:[
+    {field:'date',headerName:'일자'},{field:'mkt',headerName:'시장'},{field:'sym',headerName:'종목'},
+    {field:'type',headerName:'구분',valueFormatter:x=>({buy:'매수',sell:'매도',div:'배당'})[x.value]},
+    {field:'qty',headerName:'수량'},{field:'price',headerName:'단가'},{field:'fee',headerName:'수수료'},
+    {headerName:'',width:70,minWidth:70,flex:0,cellRenderer:p=>{const b=document.createElement('button');b.className='btn btn-sm btn-link text-danger p-0';b.textContent='삭제';b.onclick=()=>{S.tx=S.tx.filter(t=>t.id!==p.data.id);save()};return b}}],
+    defaultColDef:{flex:1,minWidth:80,sortable:true,filter:true}});
+  chart=new Chart($('cA'),{type:'doughnut',data:{labels:[],datasets:[{data:[]}]},options:{plugins:{legend:{position:'bottom'}}}});
+  render();
+}
+
+// ---------- 저장 / 동기화 ----------
+let db=null,user=null;
+function save(){
+  localStorage.setItem(KEY,JSON.stringify(S));
+  if(db&&user) db.doc(`users/${user.uid}/data/portfolio`).set({json:JSON.stringify(S),at:Date.now()}).then(()=>status('동기화 완료')).catch(e=>status('동기화 실패: '+e.message));
+  render();
+}
+const status=t=>$('status').textContent=t;
+
+if(FIREBASE_CONFIG.apiKey){
+  firebase.initializeApp(FIREBASE_CONFIG); db=firebase.firestore();
+  firebase.auth().onAuthStateChanged(async u=>{
+    user=u; $('login').textContent=u?'로그아웃':'Google 로그인';
+    if(!u) return;
+    const d=await db.doc(`users/${u.uid}/data/portfolio`).get();
+    if(d.exists){S=JSON.parse(d.data().json);localStorage.setItem(KEY,JSON.stringify(S));render();status('클라우드 데이터를 불러왔습니다')}
+    else save();
+  });
+}
+$('login').onclick=()=>{
+  if(!db) return alert('index.html 상단의 FIREBASE_CONFIG를 먼저 채워주세요.');
+  user?firebase.auth().signOut():firebase.auth().signInWithPopup(new firebase.auth.GoogleAuthProvider());
+};
+
+// ---------- 이벤트 ----------
+$('f').onsubmit=e=>{
+  e.preventDefault();
+  S.tx.push({id:Date.now()+''+Math.random().toString(36).slice(2,6),date:$('d').value,mkt:$('m').value,
+    sym:$('s').value.trim().toUpperCase(),type:$('t').value,qty:+$('q').value,price:+$('p').value,fee:+$('fee').value||0});
+  e.target.reset(); $('d').valueAsDate=new Date(); save();
+};
+$('fx').onchange=e=>{S.fx=+e.target.value||1;save()};
+$('theme').onclick=()=>{
+  const dark=document.documentElement.dataset.bsTheme!=='dark';
+  document.documentElement.dataset.bsTheme=dark?'dark':'light';
+  document.querySelectorAll('.grid').forEach(g=>g.className=g.className.replace(/ag-theme-quartz(-dark)?/,dark?'ag-theme-quartz-dark':'ag-theme-quartz'));
+  $('theme').textContent=dark?'라이트 모드':'다크 모드'; localStorage.setItem('pf.theme',dark?'d':'l');
+};
+$('exp').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(S,null,1)],{type:'application/json'}));a.download=`portfolio-${new Date().toISOString().slice(0,10)}.json`;a.click()};
+$('imp').onchange=async e=>{
+  try{const j=JSON.parse(await e.target.files[0].text()); if(!Array.isArray(j.tx)) throw 0; S=j; save(); status('복원 완료')}
+  catch{alert('올바른 백업 파일이 아닙니다.')}
+};
+
+$('d').valueAsDate=new Date();
+init();
+if(localStorage.getItem('pf.theme')==='d') $('theme').click();
+</script>
+</body>
+</html>
